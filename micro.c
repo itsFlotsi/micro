@@ -5,28 +5,39 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <errno.h>
+#include <sys/ioctl.h>
 
 /* defines */
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 /* data */
 
-struct termios termios;
+struct editorConfig {
+    int screenrows;
+    int screencols;
+    struct termios termios;
+};
 
+struct editorConfig E;
+
+/* terminal */
 void die(const char *msg) {
+    write(STDOUT_FILENO, "\x1b[2J",4);
+    write(STDOUT_FILENO, "\x1b[H",3);
+
     perror(msg);
     exit(EXIT_FAILURE);
 }
 void disableRawMode() {
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &termios) == -1) {
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.termios) == -1) {
         die("tcsetattr");
     };
 }
 void enableRawMode() {
-    if (tcgetattr(STDIN_FILENO, &termios) == -1) die("tcgetattr");
+    if (tcgetattr(STDIN_FILENO, &E.termios) == -1) die("tcgetattr");
     atexit(disableRawMode);
 
-    struct termios raw = termios;
+    struct termios raw = E.termios;
 
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP| IXON);
     raw.c_oflag &= ~(OPOST);
@@ -45,9 +56,51 @@ char editorReadKey() {
     }
     return c;
 }
+int getCursorPosition(int *rows, int *cols) {
+    char buf[32];
+    unsigned int i = 0;
+
+    if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
+
+    printf("\r\n");
+    char c;
+    while (i < sizeof(buf) - 1) {
+        if (read(STDIN_FILENO, &buf[i],1) != 1) break;
+        if (buf[i] == 'R') break;
+        i++;
+    }
+    buf[i] = '\0';
+
+    printf("\r\n&buf[1]: '%s'\r\n", &buf[1]);
+    editorReadKey();
+    return -1;
+}
+int getWindowSize(int *rows, int *cols) {
+    struct winsize ws;
+
+    if (1 || ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+        if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
+        getCursorPosition(rows, cols);
+    } else {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+    }
+}
 /* output */
+void editorDrawRows(){
+    int y;
+    for(y = 0; y < E.screenrows; y++) {
+        write(STDOUT_FILENO, "~\r\n",3);
+    }
+}
 void editorRefreshScreen() {
     write(STDOUT_FILENO, "\x1b[2J",4);
+    write(STDOUT_FILENO, "\x1b[H",3);
+
+    editorDrawRows();
+
+    write(STDOUT_FILENO, "\x1b[H",3);
 }
 /* input */
 void editorProcessKeypress() {
@@ -55,14 +108,20 @@ void editorProcessKeypress() {
 
     switch (input) {
         case CTRL_KEY('q'):
+            write(STDOUT_FILENO, "\x1b[2J",4);
+            write(STDOUT_FILENO, "\x1b[H",3);
             exit(EXIT_SUCCESS);
             break;
     }
 }
 
 /* init */
+void initEditor(){
+    if(getWindowSize(&E.screenrows, &E.screencols) == -1) die("GetWindowSize");
+}
 int main() {
     enableRawMode();
+    initEditor();
 
     while(1) {
         editorRefreshScreen();
